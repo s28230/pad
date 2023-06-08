@@ -3,6 +3,7 @@ from dash import dcc
 from dash import html
 import pandas as pd
 import plotly.express as px
+import statsmodels.formula.api as smf
 
 
 def prepare_data():
@@ -52,6 +53,12 @@ platforms.sort()
 publishers = df['Publisher'].value_counts().index.tolist()
 publishers.sort()
 
+salesOptions = [{'label': 'Total sales', 'value': 'Total'},
+                {'label': 'NA sales', 'value': 'NA'},
+                {'label': 'EU sales', 'value': 'EU'},
+                {'label': 'JP sales', 'value': 'JP'},
+                {'label': 'Other sales', 'value': 'Other'}]
+
 defaultGroup = 'Genre'
 app.layout = html.Div([
     html.H1('Video game sales'),
@@ -70,12 +77,7 @@ app.layout = html.Div([
         className="row", children=[
             html.Div([
                 html.Label('Sales:'),
-                dcc.Dropdown(options=[{'label': 'Total sales', 'value': 'Total'},
-                                      {'label': 'NA sales', 'value': 'NA'},
-                                      {'label': 'JP sales', 'value': 'JP'},
-                                      {'label': 'Other sales', 'value': 'Other'},
-                                      ],
-                             value='Total', id='sales-dd'),
+                dcc.Dropdown(options=salesOptions, value='Total', id='sales-dd'),
                 html.Div(id="sales-dd-div")], style={"width": "20%"}),
             html.Div([], style={"width": "6%"}),
             html.Div([
@@ -128,6 +130,23 @@ app.layout = html.Div([
             ], style={"width": "25%"}),
         ], style=dict(display='flex')),
     dcc.Graph(id='region-pie'),
+    html.H2('Sales least significant factor analysis:'),
+    html.Div(
+        className="row", children=[
+            html.Div([
+                html.Label('Sales:'),
+                dcc.Dropdown(options=salesOptions, value='Total', id='sales-independent-dd'),
+                html.Div(id="sales-independent-dd-div")], style={"width": "20%"}),
+            html.Div([], style={"width": "12.5%"}),
+            html.Div([
+                html.Label('Eliminate:'),
+                dcc.Dropdown(options=[{'label': column, 'value': column} for column in ['Year', 'Genre', 'Platform', 'Publisher']], value='All', id='eliminate-dd', multi=True),
+                html.Div(id="eliminate-dd-div"),
+                ], style={"width": "25%"}),
+            html.Div([], style={"width": "12.5%"}),
+        ], style=dict(display='flex')),
+    html.Br(),
+    dcc.Markdown(dangerously_allow_html=True, id='model-fit')
 ])
 
 
@@ -187,6 +206,22 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
     df_sales.drop(['Year', 'index'], inplace=True)
     names = df_sales.index.values.tolist()
     return px.pie(values=df_sales.values.tolist(), names=names, title='Sales per region')
+
+@app.callback(
+    dash.dependencies.Output('model-fit', 'children'),
+    [dash.dependencies.Input("sales-independent-dd", "value"),
+    dash.dependencies.Input("eliminate-dd", "value")]
+)
+def set_model_fit(independentColumn, eliminateColumns):
+    dependentColumns = parseFilter(eliminateColumns)
+    if 'All' in dependentColumns:
+        dependentColumns = ['Year', 'Genre', 'Platform', 'Publisher']
+    model = smf.ols(createFormula(independentColumn, dependentColumns), data=df).fit()
+    #return model.summary().as_html()
+    return model.summary().as_html()
+
+def createFormula(independentColumn, dependentColumns):
+    return f"{independentColumn} ~ {' + '.join(dependentColumns)}"
 
 if __name__ == '__main__':
     app.run_server(debug=True)
