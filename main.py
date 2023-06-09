@@ -4,11 +4,10 @@ from dash import html
 import pandas as pd
 import plotly.express as px
 import statsmodels.formula.api as smf
+from sklearn.linear_model import LogisticRegression
 
-
-def prepare_data():
-    sales_df = pd.read_csv('vgsales.csv')
-    sales_df.drop(columns=[sales_df.columns[0], sales_df.columns[1]], axis=1, inplace=True)
+def prepare_data(original):
+    sales_df = original.drop(columns=[sales_df.columns[0], sales_df.columns[1]], axis=1)
     sales_df.dropna(axis=0, inplace=True)
     sales_df.replace(['PS2', 'PS3', 'PS4', 'PSV'], 'PS', inplace=True)
     sales_df.replace(['XB', 'XOne', 'X360'], 'Xbox', inplace=True)
@@ -42,7 +41,8 @@ def get_trend_line_type_options(trend_type):
 
 
 app = dash.Dash(__name__)
-df = prepare_data()
+original_df = pd.read_csv('vgsales.csv')
+df = prepare_data(original_df)
 years = df['Year'].value_counts().index.astype('int64').tolist()
 years.sort()
 
@@ -63,9 +63,9 @@ defaultGroup = 'Genre'
 app.layout = html.Div([
     html.H1('Video game sales'),
     html.H2('Data to analyze:'),
-    dash.dash_table.DataTable(df.to_dict('records'),
-                              [{"name": i, "id": i} for i in df.columns],
-                              id='wineData',
+    dash.dash_table.DataTable(original_df.to_dict('records'),
+                              [{"name": i, "id": i} for i in original_df.columns],
+                              id='originalData',
                               page_size=10),
     html.H2('Sales dependency analysis:'),
     html.Div([
@@ -182,6 +182,13 @@ def update_graph(years_range, sales_option, group_option, filter_values, trend_t
 def parseFilter(filter):
     filter_list = filter if type(filter) == list else [filter]
     return filter_list if filter_list else ['All']
+
+
+def createModel():
+    regression = LogisticRegression()
+    x_columns = ['Year', 'Publisher','Platform','Genre']
+    y_columns = salesOptions.values
+    x = train.loc[:, feature_cols]
 
 @app.callback(
     dash.dependencies.Output('region-pie', 'figure'),
