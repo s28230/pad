@@ -7,16 +7,17 @@ import statsmodels.formula.api as smf
 from sklearn.linear_model import LogisticRegression
 
 def prepare_data(original):
-    sales_df = original.drop(columns=[sales_df.columns[0], sales_df.columns[1]], axis=1)
+    sales_df = original.drop(columns=[original.columns[0], original.columns[1]], axis=1)
     sales_df.dropna(axis=0, inplace=True)
     sales_df.replace(['PS2', 'PS3', 'PS4', 'PSV'], 'PS', inplace=True)
     sales_df.replace(['XB', 'XOne', 'X360'], 'Xbox', inplace=True)
     sales_df.replace(['Wii', 'N64', 'GC', 'SNES'], 'NES', inplace=True)
     sales_df.replace(['3DS', 'DS', 'GC', 'GBA'], 'GB', inplace=True)
-#   df.replace(['SNES', 'N64', 'PS4', 'PSV'], 'PS', inplace=True)
     sales_df = sales_df.rename(
         columns={"NA_Sales": "NA", "EU_Sales": "EU", "JP_Sales": "JP", "Other_Sales": "Other", "Global_Sales": "Total"},
         errors="raise")
+    sales_df = sales_df.groupby(['Year', 'Platform', 'Publisher', 'Genre'], as_index=False).agg(
+        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum', 'Total': 'sum'}).reset_index()
     years_to_exclude = sales_df['Year'].value_counts().loc[lambda x: x < 200].index.astype('int64').values.tolist()
     platforms_to_exclude = sales_df['Platform'].value_counts().loc[lambda x: x < 200].index.values.tolist()
     publishers_to_exclude = sales_df['Publisher'].value_counts().loc[lambda x: x < 200].index.values.tolist()
@@ -146,7 +147,44 @@ app.layout = html.Div([
             html.Div([], style={"width": "12.5%"}),
         ], style=dict(display='flex')),
     html.Br(),
-    dcc.Markdown(dangerously_allow_html=True, id='model-fit')
+    dcc.Markdown(dangerously_allow_html=True, id='model-fit'),
+    html.Br(),
+    html.H2('Sales regression analysis for additional year:'),
+    html.Div([
+        html.Label('Years regression range:'),
+        dcc.RangeSlider(years[0], years[-1], 1, marks={i: '{}'.format(i) for i in years}, id='years-regression-range',
+                        value=[years[0], years[-1]]),
+        html.Br()
+    ]),
+    html.Div(
+        className="row", children=[
+            html.Div([
+                html.Label('Sales:'),
+                dcc.Dropdown(options=salesOptions, value='Total', id='sales-regression-dd'),
+                html.Div(id="sales-regression-dd-div")], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Group by:'),
+                dcc.Dropdown(options=[{'label': column, 'value': column} for column in [
+                    defaultGroup, 'Publisher', 'Platform']], value=defaultGroup, id='group-regression-dd'),
+                html.Div(id="group-regression-dd-div"),
+            ], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Filter:'),
+                dcc.Dropdown(id='filter-regression-dd', value='All', multi=True),
+                html.Div(id="filter-regression-dd-div"),
+            ], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Trend type:'),
+                dcc.Dropdown(options=[{'label': column, 'value': column}
+                                      for column in ['ols', 'rolling', 'ewm', 'lowess', 'expanding']],
+                             value='ols', id='trend-regression-dd'),
+                html.Div(id="trend-regression-dd-div"),
+            ], style={"width": "20%"}),
+        ], style=dict(display='flex')),
+    dcc.Graph(id='regression'),
 ])
 
 
@@ -182,13 +220,6 @@ def update_graph(years_range, sales_option, group_option, filter_values, trend_t
 def parseFilter(filter):
     filter_list = filter if type(filter) == list else [filter]
     return filter_list if filter_list else ['All']
-
-
-def createModel():
-    regression = LogisticRegression()
-    x_columns = ['Year', 'Publisher','Platform','Genre']
-    y_columns = salesOptions.values
-    x = train.loc[:, feature_cols]
 
 @app.callback(
     dash.dependencies.Output('region-pie', 'figure'),
@@ -229,6 +260,64 @@ def set_model_fit(independentColumn, eliminateColumns):
 
 def createFormula(independentColumn, dependentColumns):
     return f"{independentColumn} ~ {' + '.join(dependentColumns)}"
+
+
+@app.callback(
+    dash.dependencies.Output('filter-regression-dd', 'options'),
+    [dash.dependencies.Input('group-regression-dd', 'value')]
+)
+def set_regression_filter_options(group_option):
+    return [{'label': i, 'value': i} for i in df[group_option].unique().tolist()]
+
+
+def regressionModel(source):
+    x_columns = ['Year', 'Publisher', 'Platform', 'Genre']
+    y_columns = ['Total', 'NA', 'EU', 'JP', 'Other']
+    cat_vars = ['Publisher', 'Platform', 'Genre']
+    data = source
+    data_num = data.select_dtypes(include='int64').copy()
+
+
+
+    for var in cat_vars:
+        cat_list = 'var' + '_' + var
+        cat_list = pd.get_dummies(data[var], prefix=var)
+        data1 = data.join(cat_list)
+        data = data1
+    data_vars = data.columns.values.tolist()
+    to_keep = [i for i in data_vars if i not in cat_vars]
+    data_final = data[to_keep]
+
+
+    print(data_final.columns.values)
+
+    #regression = LogisticRegression()
+    #result = regression.fit(source.loc[:, x_columns], source.loc[:, y_columns])
+    #print(result)
+
+@app.callback(
+    dash.dependencies.Output('regression', 'figure'),
+    [dash.dependencies.Input("years-regression-range", "value"),
+    dash.dependencies.Input("sales-regression-dd", "value"),
+    dash.dependencies.Input("group-regression-dd", "value"),
+    dash.dependencies.Input("filter-regression-dd", "value"),
+    dash.dependencies.Input("trend-regression-dd", "value")]
+)
+def update_graph(years_range, sales_option, group_option, filter_values, trend_type):
+    filter_list = parseFilter(filter_values)
+    df_sales = df[(df['Year'] >= years_range[0]) & (df['Year'] <= years_range[-1])]
+    regressionModel(df_sales)
+
+    if 'All' not in filter_list:
+        df_sales = df[df[group_option].isin(filter_list)]
+    df_sales = df_sales.groupby(['Year', group_option], as_index=False).agg(
+        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum', 'Total': 'sum'}).reset_index()
+    figure = px.scatter(df_sales, 'Year', sales_option, title=f"Year vs {sales_option} sales",
+                        labels={"Year": "Year", sales_option: f"{sales_option} sales in mln",
+                            group_option: group_option},
+                        trendline_options=get_trend_line_type_options(trend_type),
+                        trendline=trend_type, color=group_option)
+    return figure
 
 if __name__ == '__main__':
     app.run_server(debug=True)
