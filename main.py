@@ -1,3 +1,4 @@
+import numpy as np
 import dash
 from dash import dcc
 from dash import html
@@ -5,10 +6,15 @@ import pandas as pd
 import plotly.express as px
 import statsmodels.formula.api as smf
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn import metrics
+from sklearn import preprocessing
+from sklearn import utils
 
 def prepare_data(original):
     sales_df = original.drop(columns=[original.columns[0], original.columns[1]], axis=1)
     sales_df.dropna(axis=0, inplace=True)
+    sales_df['Year'] = sales_df['Year'].astype('int')
     sales_df.replace(['PS2', 'PS3', 'PS4', 'PSV'], 'PS', inplace=True)
     sales_df.replace(['XB', 'XOne', 'X360'], 'Xbox', inplace=True)
     sales_df.replace(['Wii', 'N64', 'GC', 'SNES'], 'NES', inplace=True)
@@ -270,15 +276,13 @@ def set_regression_filter_options(group_option):
     return [{'label': i, 'value': i} for i in df[group_option].unique().tolist()]
 
 
-def regressionModel(source):
-    x_columns = ['Year', 'Publisher', 'Platform', 'Genre']
-    y_columns = ['Total', 'NA', 'EU', 'JP', 'Other']
+def regressionModel(source, sales_column, group_column):
     cat_vars = ['Publisher', 'Platform', 'Genre']
+    cat_vars = [group_column]
+
+
+
     data = source
-    data_num = data.select_dtypes(include='int64').copy()
-
-
-
     for var in cat_vars:
         cat_list = 'var' + '_' + var
         cat_list = pd.get_dummies(data[var], prefix=var)
@@ -287,13 +291,38 @@ def regressionModel(source):
     data_vars = data.columns.values.tolist()
     to_keep = [i for i in data_vars if i not in cat_vars]
     data_final = data[to_keep]
+    feature_cols = data_final.columns.values.tolist()
+
+    feature_cols.remove(sales_column)
+    feature_cols.remove('index')
+    print(feature_cols)
+    #data_final[sales_column] = data_final[sales_column]*100  # Target variable
+    #data_final[sales_column] = data_final[sales_column].astype('Int64')
+    #print(data_final)
+    X = data_final[feature_cols]  # Features
+    df2 = data_final.loc[:, [sales_column]]
+    df2[sales_column] *= 100  # Does not raise
+    df2[sales_column] = df2[sales_column].astype('int')
+    y = df2[sales_column]
+    print(y)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=342)
 
 
-    print(data_final.columns.values)
+    print(y_test)
 
-    #regression = LogisticRegression()
-    #result = regression.fit(source.loc[:, x_columns], source.loc[:, y_columns])
-    #print(result)
+    logreg = LogisticRegression(random_state=16)
+    # fit the model with data
+    logreg.fit(X_train, y_train)
+    y_pred = logreg.predict(X_test)
+    pred_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred})
+    print(pred_df)
+
+def get_features_and_target_arrays(df, numeric_cols, cat_cols, scaler):
+    X_numeric_scaled = scaler.transform(df[numeric_cols])
+    X_categorical = df[cat_cols].to_numpy()
+    X = np.hstack((X_categorical, X_numeric_scaled))
+    y = df['target']
+    return X, y
 
 @app.callback(
     dash.dependencies.Output('regression', 'figure'),
@@ -306,12 +335,21 @@ def regressionModel(source):
 def update_graph(years_range, sales_option, group_option, filter_values, trend_type):
     filter_list = parseFilter(filter_values)
     df_sales = df[(df['Year'] >= years_range[0]) & (df['Year'] <= years_range[-1])]
-    regressionModel(df_sales)
+    sales_columns = ['NA','EU','JP','Other', 'Total']
+    sales_columns.remove(sales_option)
+    df_sales.drop(columns=sales_columns, inplace=True, axis=1)
+    group_columns = ['Genre', 'Publisher', 'Platform']
+    group_columns.remove(group_option)
+    df_sales.drop(columns=group_columns, inplace=True, axis=1)
+
 
     if 'All' not in filter_list:
         df_sales = df[df[group_option].isin(filter_list)]
-    df_sales = df_sales.groupby(['Year', group_option], as_index=False).agg(
-        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum', 'Total': 'sum'}).reset_index()
+
+    df_sales = df_sales.groupby(['Year', group_option], as_index=False).agg({sales_option: 'sum'}).reset_index()
+
+    regressionModel(df_sales, sales_option, group_option)
+
     figure = px.scatter(df_sales, 'Year', sales_option, title=f"Year vs {sales_option} sales",
                         labels={"Year": "Year", sales_option: f"{sales_option} sales in mln",
                             group_option: group_option},
