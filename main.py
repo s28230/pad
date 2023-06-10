@@ -5,11 +5,9 @@ from dash import html
 import pandas as pd
 import plotly.express as px
 import statsmodels.formula.api as smf
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn import metrics
 from sklearn import preprocessing
-from sklearn import utils
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
 
 def prepare_data(original):
     sales_df = original.drop(columns=[original.columns[0], original.columns[1]], axis=1)
@@ -32,6 +30,37 @@ def prepare_data(original):
     sales_df.replace(platforms_to_exclude, 'Other', inplace=True)
     return sales_df
 
+def regression_prepare(original):
+    rgr_df = original.fillna(0)
+    for c in rgr_df.columns:
+        if rgr_df[c].dtype == 'object':
+            lbl = preprocessing.LabelEncoder()
+            lbl.fit(list(rgr_df[c].values))
+            rgr_df[c] = lbl.transform(list(rgr_df[c].values))
+    label = rgr_df.pop('Global_Sales')
+    data_train, data_test, label_train, label_test = train_test_split(rgr_df, label, test_size=0.2, random_state=200)
+
+    lr_data_train = data_train[['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales']]
+    lr_data_test = data_test[['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales']]
+    lr_label_train = label_train
+    lr_label_test = label_test
+
+    lr = LinearRegression()
+    lr.fit(lr_data_train, lr_label_train)
+    lr_score_train = lr.score(lr_data_train, lr_label_train)
+    print("Training score: ", lr_score_train)
+    lr_score_test = lr.score(lr_data_test, lr_label_test)
+    print("Testing score: ", lr_score_test)
+    print(data_test.head())
+    y_pre = lr.predict(lr_data_test)
+    out_lr = pd.DataFrame(
+        {'Actual_Global_Sales': lr_label_test, 'Predict_Global_Sales': y_pre, 'Diff': (lr_label_test - y_pre)})
+    print(out_lr[['Actual_Global_Sales', 'Predict_Global_Sales', 'Diff']].head(5))
+
+
+
+
+
 
 def get_trend_line_type_options(trend_type):
     if trend_type == 'ols':
@@ -50,6 +79,7 @@ def get_trend_line_type_options(trend_type):
 app = dash.Dash(__name__)
 original_df = pd.read_csv('vgsales.csv')
 df = prepare_data(original_df)
+regression_prepare(original_df)
 years = df['Year'].value_counts().index.astype('int64').tolist()
 years.sort()
 
@@ -278,44 +308,44 @@ def set_regression_filter_options(group_option):
 
 def regressionModel(source, sales_column, group_column):
     cat_vars = ['Publisher', 'Platform', 'Genre']
-    cat_vars = [group_column]
+    rgr_df = source
+
+    lbe = preprocessing.LabelEncoder()
+    rgr_df['Genre_Cat'] = lbe.fit_transform(rgr_df['Genre'])
+    rgr_df['Platform_Cat'] = lbe.fit_transform(rgr_df['Platform'])
+    rgr_df['Publisher_Cat'] = lbe.fit_transform(rgr_df['Publisher'])
+    rgr_df.drop(columns= ['Publisher', 'Platform', 'Genre'], inplace=True, axis=1)
 
 
+    y = rgr_df.pop(sales_column)
+    x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
 
-    data = source
-    for var in cat_vars:
-        cat_list = 'var' + '_' + var
-        cat_list = pd.get_dummies(data[var], prefix=var)
-        data1 = data.join(cat_list)
-        data = data1
-    data_vars = data.columns.values.tolist()
-    to_keep = [i for i in data_vars if i not in cat_vars]
-    data_final = data[to_keep]
-    feature_cols = data_final.columns.values.tolist()
-
-    feature_cols.remove(sales_column)
-    feature_cols.remove('index')
-    print(feature_cols)
-    #data_final[sales_column] = data_final[sales_column]*100  # Target variable
-    #data_final[sales_column] = data_final[sales_column].astype('Int64')
-    #print(data_final)
-    X = data_final[feature_cols]  # Features
-    df2 = data_final.loc[:, [sales_column]]
-    df2[sales_column] *= 100  # Does not raise
-    df2[sales_column] = df2[sales_column].astype('int')
-    y = df2[sales_column]
-    print(y)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=342)
+    xgb_params = {
+        'eta': 0.05,
+        'max_depth': 5,
+        'subsample': 0.7,
+        'colsample_bytree': 0.7,
+        'objective': 'reg:linear',
+        'eval_metric': 'rmse',
+        'silent': 1
+    }
 
 
-    print(y_test)
+    dtrain = xgb.DMatrix(x_train, y_train)
+    cv_output = xgb.cv(xgb_params, dtrain, num_boost_round=1000, early_stopping_rounds=20,
+                       verbose_eval=50, show_stdv=False)
+    num_boost_rounds = len(cv_output)
+    model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=num_boost_rounds)
 
-    logreg = LogisticRegression(random_state=16)
-    # fit the model with data
-    logreg.fit(X_train, y_train)
-    y_pred = logreg.predict(X_test)
-    pred_df = pd.DataFrame({'Actual': y_test, 'Predicted': y_pred})
-    print(pred_df)
+    dtest = xgb.DMatrix(x_test)
+
+    y_predict = model.predict(dtest)
+    out = pd.DataFrame(
+        {'Actual_Global_Sales': y_test, 'predict_Global_Sales': y_predict, 'Diff': (y_test - y_predict)})
+    out[['Actual_Global_Sales', 'predict_Global_Sales', 'Diff']].head(5)
+
+    print(out)
+
 
 def get_features_and_target_arrays(df, numeric_cols, cat_cols, scaler):
     X_numeric_scaled = scaler.transform(df[numeric_cols])
@@ -338,15 +368,11 @@ def update_graph(years_range, sales_option, group_option, filter_values, trend_t
     sales_columns = ['NA','EU','JP','Other', 'Total']
     sales_columns.remove(sales_option)
     df_sales.drop(columns=sales_columns, inplace=True, axis=1)
-    group_columns = ['Genre', 'Publisher', 'Platform']
-    group_columns.remove(group_option)
-    df_sales.drop(columns=group_columns, inplace=True, axis=1)
-
 
     if 'All' not in filter_list:
         df_sales = df[df[group_option].isin(filter_list)]
 
-    df_sales = df_sales.groupby(['Year', group_option], as_index=False).agg({sales_option: 'sum'}).reset_index()
+    #df_sales = df_sales.groupby(['Year', 'Genre','Platform','Publisher'], as_index=False).agg({sales_option: 'sum'}).reset_index()
 
     regressionModel(df_sales, sales_option, group_option)
 
