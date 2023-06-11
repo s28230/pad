@@ -9,6 +9,14 @@ from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 
+from sklearn.preprocessing import StandardScaler
+from sklearn import preprocessing
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from sklearn.model_selection import train_test_split, cross_val_score, cross_val_predict
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, r2_score
+
 def prepare_data(original):
     sales_df = original.drop(columns=[original.columns[0], original.columns[1]], axis=1)
     sales_df.dropna(axis=0, inplace=True)
@@ -31,36 +39,32 @@ def prepare_data(original):
     return sales_df
 
 def regression_prepare(original):
-    rgr_df = original.fillna(0)
-    for c in rgr_df.columns:
-        if rgr_df[c].dtype == 'object':
-            lbl = preprocessing.LabelEncoder()
-            lbl.fit(list(rgr_df[c].values))
-            rgr_df[c] = lbl.transform(list(rgr_df[c].values))
-    label = rgr_df.pop('Global_Sales')
-    data_train, data_test, label_train, label_test = train_test_split(rgr_df, label, test_size=0.2, random_state=200)
+    regression_data = {}
+    rgr_df = original.drop_duplicates(keep='first').copy()
+    rgr_df = rgr_df.dropna()
+    print(rgr_df.info())
 
-    lr_data_train = data_train[['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales']]
-    lr_data_test = data_test[['NA_Sales', 'EU_Sales', 'JP_Sales', 'Other_Sales']]
-    lr_label_train = label_train
-    lr_label_test = label_test
+    lbe = preprocessing.LabelEncoder()
+    rgr_df['Platform'] = lbe.fit_transform(rgr_df['Platform'])
+    rgr_df['Genre'] = lbe.fit_transform(rgr_df['Genre'])
+    rgr_df['Publisher'] = lbe.fit_transform(rgr_df['Publisher'])
+    y = rgr_df.pop('Global_Sales')
 
+    rgr_df.drop(columns=['Name','Other_Sales', 'JP_Sales', 'EU_Sales'], inplace=True)
+    print(rgr_df.sample(3))
+
+    x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
     lr = LinearRegression()
-    lr.fit(lr_data_train, lr_label_train)
-    lr_score_train = lr.score(lr_data_train, lr_label_train)
-    print("Training score: ", lr_score_train)
-    lr_score_test = lr.score(lr_data_test, lr_label_test)
-    print("Testing score: ", lr_score_test)
-    print(data_test.head())
-    y_pre = lr.predict(lr_data_test)
+    model_multi = lr.fit(x_train, y_train)
+
+    print(f'Score of Linear Regression Model: {lr.score(x_test, y_test) * 100}%')
+
+    y_pred = model_multi.predict(x_test)
     out_lr = pd.DataFrame(
-        {'Actual_Global_Sales': lr_label_test, 'Predict_Global_Sales': y_pre, 'Diff': (lr_label_test - y_pre)})
+        {'Actual_Global_Sales': y_test, 'Predict_Global_Sales': y_pred, 'Diff': (y_test - y_pred)})
     print(out_lr[['Actual_Global_Sales', 'Predict_Global_Sales', 'Diff']].head(5))
 
-
-
-
-
+    return regression_data
 
 def get_trend_line_type_options(trend_type):
     if trend_type == 'ols':
@@ -78,9 +82,11 @@ def get_trend_line_type_options(trend_type):
 
 app = dash.Dash(__name__)
 original_df = pd.read_csv('vgsales.csv')
+originalColumnsNoGSales = original_df.columns.values.tolist()
+originalColumnsNoGSales.remove('Global_Sales')
 df = prepare_data(original_df)
-regression_prepare(original_df)
-years = df['Year'].value_counts().index.astype('int64').tolist()
+regression_data = regression_prepare(original_df)
+years = df['Year'].value_counts().index.tolist()
 years.sort()
 
 genres = df['Genre'].value_counts().index.tolist()
@@ -167,60 +173,25 @@ app.layout = html.Div([
             ], style={"width": "25%"}),
         ], style=dict(display='flex')),
     dcc.Graph(id='region-pie'),
-    html.H2('Sales least significant factor analysis:'),
+    html.H2('Regression model analysis targeting Global sales:'),
     html.Div(
         className="row", children=[
             html.Div([
-                html.Label('Sales:'),
-                dcc.Dropdown(options=salesOptions, value='Total', id='sales-independent-dd'),
-                html.Div(id="sales-independent-dd-div")], style={"width": "20%"}),
-            html.Div([], style={"width": "12.5%"}),
+                html.Label('Data set columns to build model from:'),
+                dcc.Dropdown(id='columns-dd', options=[{'label': column, 'value': column} for column in originalColumnsNoGSales], value=originalColumnsNoGSales, multi=True),
+                html.Div(id="columns-dd-div")], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
             html.Div([
-                html.Label('Eliminate:'),
-                dcc.Dropdown(options=[{'label': column, 'value': column} for column in ['Year', 'Genre', 'Platform', 'Publisher']], value='All', id='eliminate-dd', multi=True),
-                html.Div(id="eliminate-dd-div"),
-                ], style={"width": "25%"}),
-            html.Div([], style={"width": "12.5%"}),
+                html.Label('Model score: '),
+                html.Div(id='score'),
+            ], style={"width": "30%"}),
         ], style=dict(display='flex')),
-    html.Br(),
-    dcc.Markdown(dangerously_allow_html=True, id='model-fit'),
-    html.Br(),
-    html.H2('Sales regression analysis for additional year:'),
     html.Div([
-        html.Label('Years regression range:'),
+        html.Label('Copy years range:'),
         dcc.RangeSlider(years[0], years[-1], 1, marks={i: '{}'.format(i) for i in years}, id='years-regression-range',
-                        value=[years[0], years[-1]]),
+                        value=[years[-2], years[-1]]),
         html.Br()
-    ]),
-    html.Div(
-        className="row", children=[
-            html.Div([
-                html.Label('Sales:'),
-                dcc.Dropdown(options=salesOptions, value='Total', id='sales-regression-dd'),
-                html.Div(id="sales-regression-dd-div")], style={"width": "20%"}),
-            html.Div([], style={"width": "6%"}),
-            html.Div([
-                html.Label('Group by:'),
-                dcc.Dropdown(options=[{'label': column, 'value': column} for column in [
-                    defaultGroup, 'Publisher', 'Platform']], value=defaultGroup, id='group-regression-dd'),
-                html.Div(id="group-regression-dd-div"),
-            ], style={"width": "20%"}),
-            html.Div([], style={"width": "6%"}),
-            html.Div([
-                html.Label('Filter:'),
-                dcc.Dropdown(id='filter-regression-dd', value='All', multi=True),
-                html.Div(id="filter-regression-dd-div"),
-            ], style={"width": "20%"}),
-            html.Div([], style={"width": "6%"}),
-            html.Div([
-                html.Label('Trend type:'),
-                dcc.Dropdown(options=[{'label': column, 'value': column}
-                                      for column in ['ols', 'rolling', 'ewm', 'lowess', 'expanding']],
-                             value='ols', id='trend-regression-dd'),
-                html.Div(id="trend-regression-dd-div"),
-            ], style={"width": "20%"}),
-        ], style=dict(display='flex')),
-    dcc.Graph(id='regression'),
+    ])
 ])
 
 
@@ -282,106 +253,36 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
     return px.pie(values=df_sales.values.tolist(), names=names, title='Sales per region')
 
 @app.callback(
-    dash.dependencies.Output('model-fit', 'children'),
-    [dash.dependencies.Input("sales-independent-dd", "value"),
-    dash.dependencies.Input("eliminate-dd", "value")]
+    dash.dependencies.Output('score', 'children'),
+    dash.dependencies.Input("columns-dd", "value")
 )
-def set_model_fit(independentColumn, eliminateColumns):
-    dependentColumns = parseFilter(eliminateColumns)
-    if 'All' in dependentColumns:
-        dependentColumns = ['Year', 'Genre', 'Platform', 'Publisher']
-    model = smf.ols(createFormula(independentColumn, dependentColumns), data=df).fit()
-    #return model.summary().as_html()
-    return model.summary().as_html()
+def update_score(columns):
+    column_list = parseFilter(columns)
+    if 'All' in column_list:
+        column_list = originalColumnsNoGSales
 
-def createFormula(independentColumn, dependentColumns):
-    return f"{independentColumn} ~ {' + '.join(dependentColumns)}"
+    rgr_df = original_df.drop_duplicates(keep='first').copy()
+    rgr_df = rgr_df.dropna()
+    columns_to_drop = [c for c in rgr_df.columns if c not in column_list]
+    columns_to_drop.remove('Global_Sales')
+    print(columns_to_drop)
+    rgr_df.drop(columns=columns_to_drop, inplace=True)
 
+    for c in rgr_df.columns:
+        if rgr_df[c].dtype == 'object':
+            lbl = preprocessing.LabelEncoder()
+            lbl.fit(list(rgr_df[c].values))
+            rgr_df[c] = lbl.transform(list(rgr_df[c].values))
 
-@app.callback(
-    dash.dependencies.Output('filter-regression-dd', 'options'),
-    [dash.dependencies.Input('group-regression-dd', 'value')]
-)
-def set_regression_filter_options(group_option):
-    return [{'label': i, 'value': i} for i in df[group_option].unique().tolist()]
+    y = rgr_df.pop('Global_Sales')
 
+    print(rgr_df.sample(3))
 
-def regressionModel(source, sales_column, group_column):
-    cat_vars = ['Publisher', 'Platform', 'Genre']
-    rgr_df = source
-
-    lbe = preprocessing.LabelEncoder()
-    rgr_df['Genre_Cat'] = lbe.fit_transform(rgr_df['Genre'])
-    rgr_df['Platform_Cat'] = lbe.fit_transform(rgr_df['Platform'])
-    rgr_df['Publisher_Cat'] = lbe.fit_transform(rgr_df['Publisher'])
-    rgr_df.drop(columns= ['Publisher', 'Platform', 'Genre'], inplace=True, axis=1)
-
-
-    y = rgr_df.pop(sales_column)
     x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
+    lr = LinearRegression()
+    lr.fit(x_train, y_train)
+    return f"{lr.score(x_test, y_test) * 100}%"
 
-    xgb_params = {
-        'eta': 0.05,
-        'max_depth': 5,
-        'subsample': 0.7,
-        'colsample_bytree': 0.7,
-        'objective': 'reg:linear',
-        'eval_metric': 'rmse',
-        'silent': 1
-    }
-
-
-    dtrain = xgb.DMatrix(x_train, y_train)
-    cv_output = xgb.cv(xgb_params, dtrain, num_boost_round=1000, early_stopping_rounds=20,
-                       verbose_eval=50, show_stdv=False)
-    num_boost_rounds = len(cv_output)
-    model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=num_boost_rounds)
-
-    dtest = xgb.DMatrix(x_test)
-
-    y_predict = model.predict(dtest)
-    out = pd.DataFrame(
-        {'Actual_Global_Sales': y_test, 'predict_Global_Sales': y_predict, 'Diff': (y_test - y_predict)})
-    out[['Actual_Global_Sales', 'predict_Global_Sales', 'Diff']].head(5)
-
-    print(out)
-
-
-def get_features_and_target_arrays(df, numeric_cols, cat_cols, scaler):
-    X_numeric_scaled = scaler.transform(df[numeric_cols])
-    X_categorical = df[cat_cols].to_numpy()
-    X = np.hstack((X_categorical, X_numeric_scaled))
-    y = df['target']
-    return X, y
-
-@app.callback(
-    dash.dependencies.Output('regression', 'figure'),
-    [dash.dependencies.Input("years-regression-range", "value"),
-    dash.dependencies.Input("sales-regression-dd", "value"),
-    dash.dependencies.Input("group-regression-dd", "value"),
-    dash.dependencies.Input("filter-regression-dd", "value"),
-    dash.dependencies.Input("trend-regression-dd", "value")]
-)
-def update_graph(years_range, sales_option, group_option, filter_values, trend_type):
-    filter_list = parseFilter(filter_values)
-    df_sales = df[(df['Year'] >= years_range[0]) & (df['Year'] <= years_range[-1])]
-    sales_columns = ['NA','EU','JP','Other', 'Total']
-    sales_columns.remove(sales_option)
-    df_sales.drop(columns=sales_columns, inplace=True, axis=1)
-
-    if 'All' not in filter_list:
-        df_sales = df[df[group_option].isin(filter_list)]
-
-    #df_sales = df_sales.groupby(['Year', 'Genre','Platform','Publisher'], as_index=False).agg({sales_option: 'sum'}).reset_index()
-
-    regressionModel(df_sales, sales_option, group_option)
-
-    figure = px.scatter(df_sales, 'Year', sales_option, title=f"Year vs {sales_option} sales",
-                        labels={"Year": "Year", sales_option: f"{sales_option} sales in mln",
-                            group_option: group_option},
-                        trendline_options=get_trend_line_type_options(trend_type),
-                        trendline=trend_type, color=group_option)
-    return figure
 
 if __name__ == '__main__':
     app.run_server(debug=True)
