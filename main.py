@@ -38,34 +38,6 @@ def prepare_data(original):
     sales_df.replace(platforms_to_exclude, 'Other', inplace=True)
     return sales_df
 
-def regression_prepare(original):
-    regression_data = {}
-    rgr_df = original.drop_duplicates(keep='first').copy()
-    rgr_df = rgr_df.dropna()
-    print(rgr_df.info())
-
-    lbe = preprocessing.LabelEncoder()
-    rgr_df['Platform'] = lbe.fit_transform(rgr_df['Platform'])
-    rgr_df['Genre'] = lbe.fit_transform(rgr_df['Genre'])
-    rgr_df['Publisher'] = lbe.fit_transform(rgr_df['Publisher'])
-    y = rgr_df.pop('Global_Sales')
-
-    rgr_df.drop(columns=['Name','Other_Sales', 'JP_Sales', 'EU_Sales'], inplace=True)
-    print(rgr_df.sample(3))
-
-    x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
-    lr = LinearRegression()
-    model_multi = lr.fit(x_train, y_train)
-
-    print(f'Score of Linear Regression Model: {lr.score(x_test, y_test) * 100}%')
-
-    y_pred = model_multi.predict(x_test)
-    out_lr = pd.DataFrame(
-        {'Actual_Global_Sales': y_test, 'Predict_Global_Sales': y_pred, 'Diff': (y_test - y_pred)})
-    print(out_lr[['Actual_Global_Sales', 'Predict_Global_Sales', 'Diff']].head(5))
-
-    return regression_data
-
 def get_trend_line_type_options(trend_type):
     if trend_type == 'ols':
         return dict(log_x=True)
@@ -81,11 +53,16 @@ def get_trend_line_type_options(trend_type):
 
 
 app = dash.Dash(__name__)
+
 original_df = pd.read_csv('vgsales.csv')
+original_df.drop_duplicates(keep='first', inplace=True)
+original_df.dropna(inplace=True)
+original_df['Year'] = original_df['Year'].astype('int')
 originalColumnsNoGSales = original_df.columns.values.tolist()
 originalColumnsNoGSales.remove('Global_Sales')
+
 df = prepare_data(original_df)
-regression_data = regression_prepare(original_df)
+
 years = df['Year'].value_counts().index.tolist()
 years.sort()
 
@@ -186,12 +163,40 @@ app.layout = html.Div([
                 html.Div(id='score'),
             ], style={"width": "30%"}),
         ], style=dict(display='flex')),
+    html.H2('Prediction analysis targeting Global sales:'),
     html.Div([
-        html.Label('Copy years range:'),
-        dcc.RangeSlider(years[0], years[-1], 1, marks={i: '{}'.format(i) for i in years}, id='years-regression-range',
+        html.Label('Filter source years range:'),
+        dcc.RangeSlider(years[0], years[-1], 1, marks={i: '{}'.format(i) for i in years}, id='years-prediction-range',
                         value=[years[-2], years[-1]]),
-        html.Br()
-    ])
+        html.Br(),
+        html.Div( className="row", children=[
+            html.Div([
+                html.Label('Genre:'),
+                dcc.Dropdown(id='genre-prediction-dd', options=[{'label': column, 'value': column} for column in genres], value='All', multi=True),
+                html.Div(id="genre-prediction-dd-div")], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Publisher:'),
+                dcc.Dropdown(id='publisher-prediction-dd', options=[{'label': column, 'value': column} for column in publishers], value='All', multi=True),
+                html.Div(id="publisher-prediction-dd-div"),
+            ], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Platform:'),
+                dcc.Dropdown(id='platform-prediction-dd', options=[{'label': column, 'value': column} for column in platforms], value='All', multi=True),
+                html.Div(id="platform-prediction-dd-div"),
+            ], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Trend type:'),
+                dcc.Dropdown(options=[{'label': column, 'value': column}
+                                      for column in ['ols', 'rolling', 'ewm', 'lowess', 'expanding']],
+                             value='ols', id='trend-prediction-dd'),
+                html.Div(id="trend-prediction-dd-div"),
+            ], style={"width": "20%"}),
+        ], style=dict(display='flex')),
+    ]),
+    dcc.Graph(id='prediction'),
 ])
 
 
@@ -252,17 +257,13 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
     names = df_sales.index.values.tolist()
     return px.pie(values=df_sales.values.tolist(), names=names, title='Sales per region')
 
-@app.callback(
-    dash.dependencies.Output('score', 'children'),
-    dash.dependencies.Input("columns-dd", "value")
-)
-def update_score(columns):
+
+def prepare_model(columns):
+    model = {}
     column_list = parseFilter(columns)
     if 'All' in column_list:
         column_list = originalColumnsNoGSales
-
-    rgr_df = original_df.drop_duplicates(keep='first').copy()
-    rgr_df = rgr_df.dropna()
+    rgr_df = original_df.copy()
     columns_to_drop = [c for c in rgr_df.columns if c not in column_list]
     columns_to_drop.remove('Global_Sales')
     print(columns_to_drop)
@@ -273,16 +274,67 @@ def update_score(columns):
             lbl = preprocessing.LabelEncoder()
             lbl.fit(list(rgr_df[c].values))
             rgr_df[c] = lbl.transform(list(rgr_df[c].values))
+            model[rgr_df[c].name] = lbl.classes_
 
     y = rgr_df.pop('Global_Sales')
-
-    print(rgr_df.sample(3))
 
     x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
     lr = LinearRegression()
     lr.fit(x_train, y_train)
-    return f"{lr.score(x_test, y_test) * 100}%"
+    model['model'] = lr
+    model['df'] = rgr_df
+    model['columns'] = rgr_df.columns.values.tolist()
+    model['score'] = f"{lr.score(x_test, y_test) * 100}%"
+    return model
 
+@app.callback(
+    dash.dependencies.Output('score', 'children'),
+    dash.dependencies.Input("columns-dd", "value")
+)
+def update_score(columns):
+    return prepare_model(columns)['score']
+
+@app.callback(
+    dash.dependencies.Output('prediction', 'figure'),
+    [dash.dependencies.Input("columns-dd", "value"),
+    dash.dependencies.Input("years-prediction-range", "value"),
+    dash.dependencies.Input("genre-prediction-dd", "value"),
+    dash.dependencies.Input("platform-prediction-dd", "value"),
+    dash.dependencies.Input("publisher-prediction-dd", "value"),
+    dash.dependencies.Input("trend-prediction-dd", "value")]
+)
+def update_prediction_graph(columns, years_range, genres_option, platforms_option, publishers_option, trend_type):
+    model = prepare_model(columns)
+    genre_list = parseFilter(genres_option)
+    platform_list = parseFilter(platforms_option)
+    publisher_list = parseFilter(publishers_option)
+    print(f"Model: {columns}, years: {years_range}, genres: {genre_list}, platforms: {platform_list}, publishers: {publisher_list}")
+    rgr_df = model['df']
+    rgr_columns = model['columns']
+    filtered_df = rgr_df[(rgr_df['Year'] > years_range[0]) & (rgr_df['Year'] <= years_range[-1])]
+    if 'All' not in genre_list and 'Genre' in rgr_columns:
+        genre_list = list(map(lambda v:genre_list.index(v), genre_list))
+        filtered_df = filtered_df[filtered_df['Genre'].isin(genre_list)]
+    if 'All' not in platform_list and 'Platform' in rgr_columns:
+        platform_list = list(map(lambda v:platform_list.index(v), platform_list))
+        filtered_df = filtered_df[filtered_df['Platform'].isin(platform_list)]
+    if 'All' not in publisher_list and 'Publisher' in rgr_columns:
+        publisher_list = list(map(lambda v:publisher_list.index(v), publisher_list))
+        filtered_df = filtered_df[filtered_df['Publisher'].isin(publisher_list)]
+    print(filtered_df.columns.values)
+    new_df = filtered_df.copy()
+    yearDiff = years_range[-1] - years_range[0]
+    new_df['Year'] = new_df['Year'] + yearDiff
+    print (new_df)
+
+    y_pred = model['model'].predict(filtered_df)
+    new_df['Global_Sales'] = y_pred
+
+    figure = px.scatter(new_df, 'Year', 'Global_Sales', title=f"Year vs {'Global_Sales'} sales",
+                        labels={"Year": "Year", 'Global_Sales': f"{'Global_Sales'} sales in mln"},
+                        trendline_options=get_trend_line_type_options(trend_type),
+                        trendline=trend_type)
+    return figure
 
 if __name__ == '__main__':
     app.run_server(debug=True)
