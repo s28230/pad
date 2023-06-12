@@ -65,7 +65,6 @@ df = prepare_data(original_df)
 
 years = df['Year'].value_counts().index.tolist()
 years.sort()
-
 genres = df['Genre'].value_counts().index.tolist()
 genres.sort()
 platforms = df['Platform'].value_counts().index.tolist()
@@ -93,8 +92,7 @@ app.layout = html.Div([
         dcc.RangeSlider(years[0], years[-1], 1, marks={i: '{}'.format(i) for i in years}, id='years-range', value=[years[0], years[-1]]),
         html.Br()
     ]),
-    html.Div(
-        className="row", children=[
+    html.Div(className="row", children=[
             html.Div([
                 html.Label('Sales:'),
                 dcc.Dropdown(options=salesOptions, value='Total', id='sales-dd'),
@@ -154,9 +152,9 @@ app.layout = html.Div([
     html.Div(
         className="row", children=[
             html.Div([
-                html.Label('Data set columns to build model from:'),
+                html.Label('Data set columns to build model from (Year ,Genre, Platform, Publisher are mandatory but do not affect model score much):'),
                 dcc.Dropdown(id='columns-dd', options=[{'label': column, 'value': column} for column in originalColumnsNoGSales], value=originalColumnsNoGSales, multi=True),
-                html.Div(id="columns-dd-div")], style={"width": "20%"}),
+                html.Div(id="columns-dd-div")], style={"width": "50%"}),
             html.Div([], style={"width": "6%"}),
             html.Div([
                 html.Label('Model score: '),
@@ -195,6 +193,22 @@ app.layout = html.Div([
                 html.Div(id="trend-prediction-dd-div"),
             ], style={"width": "20%"}),
         ], style=dict(display='flex')),
+        html.Br(),
+        html.Div(className="row", children=[
+            html.Div([
+                html.Label('Group by:'),
+                dcc.Dropdown(options=[{'label': column, 'value': column} for column in [
+                                defaultGroup, 'Publisher', 'Platform']], value=defaultGroup, id='group-prediction-dd'),
+                html.Div(id="group-prediction-dd-div"),
+                ], style={"width": "20%"}),
+            html.Div([], style={"width": "6%"}),
+            html.Div([
+                html.Label('Filter:'),
+                dcc.Dropdown(id='filter-prediction-dd', value='All', multi=True),
+                html.Div(id="filter-prediction-dd-div"),
+            ], style={"width": "20%"})
+        ], style=dict(display='flex')),
+        html.Br(),
     ]),
     dcc.Graph(id='prediction'),
 ])
@@ -205,7 +219,14 @@ app.layout = html.Div([
     [dash.dependencies.Input('group-dd', 'value')]
 )
 def set_filter_options(group_option):
-    return [{'label': i, 'value': i} for i in df[group_option].unique().tolist()]
+    optionList = genres
+    if group_option == 'Genre':
+        optionList = genres
+    if group_option == 'Platform':
+        optionList = platforms
+    if group_option == 'Publisher':
+        optionList = publishers
+    return [ {'label': i, 'value': i} for i in optionList]
 
 @app.callback(
     dash.dependencies.Output('dependency', 'figure'),
@@ -217,11 +238,14 @@ def set_filter_options(group_option):
 )
 def update_graph(years_range, sales_option, group_option, filter_values, trend_type):
     filter_list = parseFilter(filter_values)
+
     df_sales = df[(df['Year'] >= years_range[0]) & (df['Year'] <= years_range[-1])]
     if 'All' not in filter_list:
         df_sales = df[df[group_option].isin(filter_list)]
     df_sales = df_sales.groupby(['Year', group_option], as_index=False).agg(
         {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum', 'Total': 'sum'}).reset_index()
+    print(get_trend_line_type_options(trend_type))
+
     figure = px.scatter(df_sales, 'Year', sales_option, title=f"Year vs {sales_option} sales",
                         labels={"Year": "Year", sales_option: f"{sales_option} sales in mln",
                             group_option: group_option},
@@ -260,13 +284,9 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
 
 def prepare_model(columns):
     model = {}
-    column_list = parseFilter(columns)
-    if 'All' in column_list:
-        column_list = originalColumnsNoGSales
     rgr_df = original_df.copy()
-    columns_to_drop = [c for c in rgr_df.columns if c not in column_list]
+    columns_to_drop = [c for c in rgr_df.columns if c not in columns]
     columns_to_drop.remove('Global_Sales')
-    print(columns_to_drop)
     rgr_df.drop(columns=columns_to_drop, inplace=True)
 
     for c in rgr_df.columns:
@@ -274,7 +294,7 @@ def prepare_model(columns):
             lbl = preprocessing.LabelEncoder()
             lbl.fit(list(rgr_df[c].values))
             rgr_df[c] = lbl.transform(list(rgr_df[c].values))
-            model[rgr_df[c].name] = lbl.classes_
+            model[rgr_df[c].name] = lbl.classes_.tolist()
 
     y = rgr_df.pop('Global_Sales')
 
@@ -285,6 +305,7 @@ def prepare_model(columns):
     model['df'] = rgr_df
     model['columns'] = rgr_df.columns.values.tolist()
     model['score'] = f"{lr.score(x_test, y_test) * 100}%"
+    model['Global_Sales'] = y
     return model
 
 @app.callback(
@@ -292,7 +313,47 @@ def prepare_model(columns):
     dash.dependencies.Input("columns-dd", "value")
 )
 def update_score(columns):
-    return prepare_model(columns)['score']
+    column_list = parseFilter(columns)
+    if 'All' in column_list:
+        column_list = originalColumnsNoGSales
+    return prepare_model(column_list)['score']
+
+@app.callback(
+    dash.dependencies.Output('filter-prediction-dd', 'options'),
+    [dash.dependencies.Input('group-prediction-dd', 'value'),
+     dash.dependencies.Input("genre-prediction-dd", "value"),
+     dash.dependencies.Input("platform-prediction-dd", "value"),
+     dash.dependencies.Input("publisher-prediction-dd", "value")]
+)
+def set_filter_prediction_options(group_option, genre, platform, publisher):
+    print(f"----------------->")
+    genre_list = parseFilter(genre)
+    platform_list = parseFilter(platform)
+    publisher_list = parseFilter(publisher)
+    optionList = genres
+    if group_option == 'Genre':
+        optionList = genre_list
+        if 'All' in genre_list:
+            optionList = genres
+    if group_option == 'Platform':
+        optionList = platform_list
+        if 'All' in platform_list:
+            optionList = platforms
+    if group_option == 'Publisher':
+        optionList = publisher_list
+        if 'All' in publisher_list:
+            optionList = publishers
+    print(f"{group_option} genre: {genre_list} platform: {platform_list} publisher: {publisher_list} = {optionList}")
+    return [{'label': i, 'value': i} for i in optionList]
+
+
+def filter_df(in_df, column, map_list, source_list):
+    in_df['Grouped'] =  in_df.apply (lambda row: map_list[int(row[column])], axis=1)
+    in_df.drop(columns=[column], axis=1, inplace=True)
+    in_df.rename(columns={"Grouped": column}, inplace=True)
+    if 'All' not in source_list:
+        in_df = in_df[in_df[column].isin(source_list)]
+    return in_df
 
 @app.callback(
     dash.dependencies.Output('prediction', 'figure'),
@@ -301,39 +362,48 @@ def update_score(columns):
     dash.dependencies.Input("genre-prediction-dd", "value"),
     dash.dependencies.Input("platform-prediction-dd", "value"),
     dash.dependencies.Input("publisher-prediction-dd", "value"),
-    dash.dependencies.Input("trend-prediction-dd", "value")]
+    dash.dependencies.Input("trend-prediction-dd", "value"),
+    dash.dependencies.Input("group-prediction-dd", "value")
+     ]
 )
-def update_prediction_graph(columns, years_range, genres_option, platforms_option, publishers_option, trend_type):
+def update_prediction_graph(columns, years_range, genres_option, platforms_option, publishers_option, trend_type, group_option):
+    column_list = parseFilter(columns)
+    if 'All' in column_list:
+        column_list = originalColumnsNoGSales
+    for c in ['Year', 'Genre', 'Platform', 'Publisher']:
+        if c not in column_list:
+            column_list.append(c)
     model = prepare_model(columns)
     genre_list = parseFilter(genres_option)
     platform_list = parseFilter(platforms_option)
     publisher_list = parseFilter(publishers_option)
+
     print(f"Model: {columns}, years: {years_range}, genres: {genre_list}, platforms: {platform_list}, publishers: {publisher_list}")
     rgr_df = model['df']
-    rgr_columns = model['columns']
+
     filtered_df = rgr_df[(rgr_df['Year'] > years_range[0]) & (rgr_df['Year'] <= years_range[-1])]
-    if 'All' not in genre_list and 'Genre' in rgr_columns:
-        genre_list = list(map(lambda v:genre_list.index(v), genre_list))
-        filtered_df = filtered_df[filtered_df['Genre'].isin(genre_list)]
-    if 'All' not in platform_list and 'Platform' in rgr_columns:
-        platform_list = list(map(lambda v:platform_list.index(v), platform_list))
-        filtered_df = filtered_df[filtered_df['Platform'].isin(platform_list)]
-    if 'All' not in publisher_list and 'Publisher' in rgr_columns:
-        publisher_list = list(map(lambda v:publisher_list.index(v), publisher_list))
-        filtered_df = filtered_df[filtered_df['Publisher'].isin(publisher_list)]
-    print(filtered_df.columns.values)
     new_df = filtered_df.copy()
     yearDiff = years_range[-1] - years_range[0]
     new_df['Year'] = new_df['Year'] + yearDiff
-    print (new_df)
 
-    y_pred = model['model'].predict(filtered_df)
+    y_pred = model['model'].predict(new_df)
     new_df['Global_Sales'] = y_pred
+    rgr_df['Global_Sales'] = model['Global_Sales']
 
-    figure = px.scatter(new_df, 'Year', 'Global_Sales', title=f"Year vs {'Global_Sales'} sales",
-                        labels={"Year": "Year", 'Global_Sales': f"{'Global_Sales'} sales in mln"},
+    combined_df = pd.concat([rgr_df, new_df], axis=0)
+
+    combined_df = filter_df(combined_df, 'Genre', model['Genre'], genre_list)
+    combined_df = filter_df(combined_df, 'Platform', model['Platform'], platform_list)
+    combined_df = filter_df(combined_df, 'Publisher', model['Publisher'], publisher_list)
+
+    combined_df = combined_df.groupby(['Year', group_option], as_index=False).agg({'Global_Sales': 'sum'}).reset_index()
+
+    figure = px.scatter(combined_df, 'Year', 'Global_Sales', title=f"Year vs {'Global_Sales'} sales",
+                        labels={"Year": "Year", 'Global_Sales': f"{'Global_Sales'} sales in mln",
+                            group_option: group_option},
                         trendline_options=get_trend_line_type_options(trend_type),
-                        trendline=trend_type)
+                        trendline=trend_type, color=group_option)
+
     return figure
 
 if __name__ == '__main__':
