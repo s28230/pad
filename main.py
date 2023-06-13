@@ -1,27 +1,20 @@
-import numpy as np
 import dash
 from dash import dcc
 from dash import html
 import pandas as pd
 import plotly.express as px
-import statsmodels.formula.api as smf
 from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
+from sklearn.cross_decomposition import PLSRegression
 
-from sklearn.preprocessing import StandardScaler
-from sklearn import preprocessing
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from sklearn.model_selection import train_test_split, cross_val_score, cross_val_predict
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
 
 def group_data(original):
     df = original.drop(columns=[original.columns[0], original.columns[1]], axis=1)
     df = df.groupby(['Year', 'Platform', 'Publisher', 'Genre'], as_index=False).agg(
         {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum', 'Total': 'sum'}).reset_index()
     return df
+
 
 def clear_data(original):
     df = original_df.drop_duplicates(keep='first')
@@ -183,11 +176,19 @@ def render_content(tab):
                                      options=[{'label': column, 'value': column} for column in originalColumnsNoGSales],
                                      value=originalColumnsNoGSales, multi=True),
                         html.Div(id="columns-dd-div")], style={"width": "50%"}),
-                    html.Div([], style={"width": "6%"}),
+                    html.Div([], style={"width": "5%"}),
+                    html.Div([
+                        html.Label('Model type: '),
+                        dcc.Dropdown(id='model-dd',
+                                     options=[{'label': column, 'value': column} for column in ['Linear', 'Lasso', 'Ridge', 'ElasticNet', 'PLS', 'PCA']],
+                                     value='Linear'),
+                        html.Div(id='score'),
+                    ], style={"width": "20%"}),
+                    html.Div([], style={"width": "5%"}),
                     html.Div([
                         html.Label('Model score: '),
                         html.Div(id='score'),
-                    ], style={"width": "30%"}),
+                    ], style={"width": "20%"}),
                 ], style=dict(display='flex')),
             html.H2('Prediction analysis targeting Global sales:'),
             html.Div([
@@ -309,7 +310,7 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
     return px.pie(values=pie_df.values.tolist(), names=names, title='Sales per region')
 
 
-def prepare_model(columns):
+def prepare_model(columns, regression_model):
     model = {}
     rgr_df = cleared_df.copy()
     columns_to_drop = [c for c in rgr_df.columns if c not in columns]
@@ -326,24 +327,35 @@ def prepare_model(columns):
     y = rgr_df.pop('Total')
 
     x_train, x_test, y_train, y_test = train_test_split(rgr_df, y, test_size=0.20, random_state=42)
-    lr = LinearRegression()
-    lr.fit(x_train, y_train)
-    model['model'] = lr
+    rm = LinearRegression()
+    if regression_model == 'Linear':
+        rm = LinearRegression()
+    elif regression_model == 'Lasso':
+        rm = Lasso(alpha=0.1)
+    elif regression_model == 'Ridge':
+        rm = Ridge(alpha=0.1)
+    elif regression_model == 'ElasticNet':
+        rm = ElasticNet(alpha=0.1)
+    elif regression_model == 'PLS':
+        rm = PLSRegression()
+    rm.fit(x_train, y_train)
+    model['model'] = rm
     model['df'] = rgr_df
     model['columns'] = rgr_df.columns.values.tolist()
-    model['score'] = f"{lr.score(x_test, y_test) * 100}%"
+    model['score'] = f"{rm.score(x_test, y_test) * 100}%"
     model['Total'] = y
     return model
 
 @app.callback(
     dash.dependencies.Output('score', 'children'),
-    dash.dependencies.Input("columns-dd", "value"),
+    [dash.dependencies.Input("columns-dd", "value"),
+        dash.dependencies.Input("model-dd", "value")]
 )
-def update_score(columns):
+def update_score(columns, model):
     column_list = parseFilter(columns)
     if 'All' in column_list:
         column_list = originalColumnsNoGSales
-    return prepare_model(column_list)['score']
+    return prepare_model(column_list, model)['score']
 
 def filter_df(in_df, column, map_list, source_list):
     in_df['Grouped'] =  in_df.apply (lambda row: map_list[int(row[column])], axis=1)
@@ -356,22 +368,23 @@ def filter_df(in_df, column, map_list, source_list):
 @app.callback(
     dash.dependencies.Output('prediction', 'figure'),
     [dash.dependencies.Input("columns-dd", "value"),
-    dash.dependencies.Input("years-prediction-range", "value"),
-    dash.dependencies.Input("genre-prediction-dd", "value"),
-    dash.dependencies.Input("platform-prediction-dd", "value"),
-    dash.dependencies.Input("publisher-prediction-dd", "value"),
-    dash.dependencies.Input("trend-prediction-dd", "value"),
-    dash.dependencies.Input("group-prediction-dd", "value"),
+        dash.dependencies.Input("model-dd", "value"),
+        dash.dependencies.Input("years-prediction-range", "value"),
+        dash.dependencies.Input("genre-prediction-dd", "value"),
+        dash.dependencies.Input("platform-prediction-dd", "value"),
+        dash.dependencies.Input("publisher-prediction-dd", "value"),
+        dash.dependencies.Input("trend-prediction-dd", "value"),
+        dash.dependencies.Input("group-prediction-dd", "value"),
      ]
 )
-def update_prediction_graph(columns, years_range, genres_option, platforms_option, publishers_option, trend_type, group_option):
+def update_prediction_graph(columns, model, years_range, genres_option, platforms_option, publishers_option, trend_type, group_option):
     column_list = parseFilter(columns)
     if 'All' in column_list:
         column_list = originalColumnsNoGSales
     for c in ['Year', 'Genre', 'Platform', 'Publisher']:
         if c not in column_list:
             column_list.append(c)
-    model = prepare_model(columns)
+    model = prepare_model(columns, model)
     genre_list = parseFilter(genres_option)
     platform_list = parseFilter(platforms_option)
     publisher_list = parseFilter(publishers_option)
@@ -402,6 +415,7 @@ def update_prediction_graph(columns, years_range, genres_option, platforms_optio
                         trendline=trend_type, color=group_option)
 
     return figure
+
 
 if __name__ == '__main__':
     app.run_server(debug=True)
