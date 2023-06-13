@@ -7,6 +7,7 @@ from sklearn import preprocessing
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression, Lasso, Ridge, ElasticNet
 from sklearn.cross_decomposition import PLSRegression
+import plotly.graph_objs as go
 
 
 def group_data(original):
@@ -50,7 +51,7 @@ def get_trend_line_type_options(trend_type):
     return None
 
 
-app = dash.Dash(__name__)
+app = dash.Dash(__name__, suppress_callback_exceptions=True)
 
 original_df = pd.read_csv('vgsales.csv')
 cleared_df = clear_data(original_df)
@@ -163,7 +164,14 @@ def render_content(tab):
                         html.Div(id="Publisher-dd-div"),
                     ], style={"width": "25%"}),
                 ], style=dict(display='flex')),
-            dcc.Graph(id='region-pie')
+            html.Div(className="row", children=[
+                dcc.Graph(id='region-pie'),
+                dcc.Graph(id='region-genre-histogram')
+            ], style=dict(display='flex')),
+            html.Div(className="row", children=[
+                dcc.Graph(id='region-platform-histogram'),
+                dcc.Graph(id='region-publisher-histogram')
+            ], style=dict(display='flex'))
         ])
     elif tab == 'regression':
         return html.Div([
@@ -309,6 +317,41 @@ def update_pie(years_range, genres_option, platforms_option, publishers_option):
     names = pie_df.index.values.tolist()
     return px.pie(values=pie_df.values.tolist(), names=names, title='Sales per region')
 
+@app.callback(
+    dash.dependencies.Output('region-genre-histogram', 'figure'),
+    [dash.dependencies.Input("years-pie-range", "value")]
+)
+def update_genre_histogram(years_range):
+    graph_df = grouped_df[(grouped_df['Year'] >= years_range[0]) & (grouped_df['Year'] <= years_range[-1])]
+    graph_df = graph_df.groupby(['Genre'], as_index=False).agg(
+        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum'}).reset_index()
+    graph_df.drop(columns=['index'], axis=1, inplace=True)
+    graph_df = graph_df.melt(id_vars=["Genre"], var_name="Region", value_name="Sales").reset_index(drop=True)
+    return px.histogram(graph_df, x="Genre", y="Sales", color='Region')
+
+@app.callback(
+    dash.dependencies.Output('region-platform-histogram', 'figure'),
+    [dash.dependencies.Input("years-pie-range", "value")]
+)
+def update_platform_histogram(years_range):
+    graph_df = grouped_df[(grouped_df['Year'] >= years_range[0]) & (grouped_df['Year'] <= years_range[-1])]
+    graph_df = graph_df.groupby(['Platform'], as_index=False).agg(
+        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum'}).reset_index()
+    graph_df.drop(columns=['index'], axis=1, inplace=True)
+    graph_df = graph_df.melt(id_vars=["Platform"], var_name="Region", value_name="Sales").reset_index(drop=True)
+    return px.histogram(graph_df, x="Platform", y="Sales", color='Region')
+
+@app.callback(
+    dash.dependencies.Output('region-publisher-histogram', 'figure'),
+    [dash.dependencies.Input("years-pie-range", "value")]
+)
+def update_publisher_histogram(years_range):
+    graph_df = grouped_df[(grouped_df['Year'] >= years_range[0]) & (grouped_df['Year'] <= years_range[-1])]
+    graph_df = graph_df.groupby(['Publisher'], as_index=False).agg(
+        {'NA': 'sum', 'EU': 'sum', 'JP': 'sum', 'Other': 'sum'}).reset_index()
+    graph_df.drop(columns=['index'], axis=1, inplace=True)
+    graph_df = graph_df.melt(id_vars=["Publisher"], var_name="Region", value_name="Sales").reset_index(drop=True)
+    return px.histogram(graph_df, x="Publisher", y="Sales", color='Region')
 
 def prepare_model(columns, regression_model):
     model = {}
